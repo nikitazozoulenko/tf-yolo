@@ -50,75 +50,19 @@ def YOLO_network(x, is_training, confidence_threshhold = 0.5):
     with tf.variable_scope("yolo_layers"):
         B = 2
         C = 20
-        x = x = conv_wrapper(x, shape = [1,1,256,B*5+C], strides = [1, 1, 1, 1], padding = "VALID")
-    return x
+        with tf.variable_scope("bndboxes"):
+            bndboxes = conv_wrapper(x, shape = [1,1,256,B*5], strides = [1, 1, 1, 1], padding = "VALID")
+            yolo_tensor = tf.nn.tanh(bndboxes)
+        with tf.variable_scope("classes"):
+            classes = conv_wrapper(x, shape = [1, 1, 256, C], strides = [1, 1, 1, 1], padding = "VALID")
+            class_tensor = tf.nn.softmax(classes)
+    return yolo_tensor, class_tensor
 
-def image_detection_op(yolo_tensor):
+def object_detection_op(yolo_tensor, threshold):
     #input: 1 yolo_tensor size None x 7 x 7 x 30:      P, X, Y, WIDTH, HEIGHT, P, X, Y, WIDTH, HEIGHT, 20C
 
     #output: None*(0-98 bndbox + class prediction)
     pass
-
-
-
-def loss_op(yolo_tensor, gt): #size is None x 7 x 7 x 30, P, X, Y, WIDTH, HEIGHT, P, X, Y, WIDTH, HEIGHT, 20C
-    #1st: match gt-label with appropriate grid cell
-    batch_size = 1
-    S = 7
-    gt = (174/486, 101/500, 349/486, 351/500) #xmin ymin xmax ymax
-    xmin, ymin, xmax, ymax = gt
-
-    #cell index
-    cell_y = int((ymin + ymax)/2 * S)
-    cell_x = int((xmin + xmax)/2 * S)
-
-    bndbox1 = yolo_tensor[0, cell_y, cell_x, 1:5] # [x, y, width, height]
-    bndbox1_confidence = yolo_tensor[0, cell_y, cell_x, 0]
-    bndbox2 = yolo_tensor[0, cell_y, cell_x, 6:10]
-    bndbox2_confidence = yolo_tensor[0, cell_y, cell_x, 5]
-
-    bndbox1_iou = iou(box1 = (bndbox1[0], bndbox1[1], bndbox1[2]+bndbox1[0], bndbox1[3]+bndbox1[1]),
-                      box2 = gt)
-
-    bndbox2_iou = iou(box1 = (bndbox2[0], bndbox2[1], bndbox2[2]+bndbox2[0], bndbox2[3]+bndbox2[1]),
-                      box2 = gt)
-
-    box_index = tf.cond(bndbox1_iou > bndbox2_iou, lambda: tf.constant(0), lambda: tf.constant(1))
-
-    #extract data from gt and yolo_tensor
-    gt_x = xmin
-    gt_y = ymin
-    gt_width = xmax-xmin
-    gt_height = ymax-ymin
-    x = yolo_tensor[:, cell_y, cell_x, box_index*5 + 1]
-    y = yolo_tensor[:, cell_y, cell_x, box_index*5 + 2]
-    width = yolo_tensor[:, cell_y, cell_x, box_index*5 + 3]
-    height = yolo_tensor[:, cell_y, cell_x, box_index*5 + 4]
-
-    #coord losses
-    x_loss = tf.reduce_sum(tf.pow(x - gt_x, 2))
-    y_loss = tf.reduce_sum(tf.pow(y - gt_y, 2))
-    w_loss = tf.reduce_sum(tf.pow(width - gt_width, 2))
-    h_loss = tf.reduce_sum(tf.pow(height - gt_height, 2))
-    coord_loss = (x_loss + y_loss + w_loss + h_loss) / batch_size
-
-    #confidence loss
-    box1_confidence = yolo_tensor[:, :, :, 0:1]
-    box2_confidence = yolo_tensor[:, :, :, 5:6]
-    #box_conficences = tf.concat([box1_confidence, box2_confidence], 3)
-    gt_box_confidences = np.zeros((1,7,7,2))
-    gt_box_confidences[:,cell_y,cell_x,box_index] = 1
-    confidence_loss_1 = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels = gt_box_confidences[:,:,:,0], logits = box1_confidence))
-    confidence_loss_2 = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels = gt_box_confidences[:,:,:,1], logits = box2_confidence))
-
-    #class loss
-    gt_class = np.zeros((1,20)) #kanske (batch_size, num_objects, 20)
-    gt_class[0, 0] = 1
-    class_prediction = yolo_tensor[0:1, cell_y, cell_x, 10:30]
-    class_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels = gt_class, logits = class_prob))
-
-    loss = coord_loss + confidence_loss + class_loss
-    return loss
 
 def iou(box1, box2):
     #input
@@ -126,9 +70,15 @@ def iou(box1, box2):
     #box2: (xmin2, ymin2, xmax2, ymax2)
 
     #output: float
-    xmin, ymin, xmax, ymax = box1
+    xmin = box1[0]
+    ymin = box1[1]
+    xmax = box1[2]
+    ymax = box1[3]
 
-    predxmin, predymin, predxmax, predymax = box2
+    predxmin = box2[0]
+    predymin = box2[1]
+    predxmax = box2[2]
+    predymax = box2[3]
 
     x0 = tf.maximum(xmin, predxmin)
     x1 = tf.minimum(xmax, predxmax)
@@ -142,63 +92,117 @@ def iou(box1, box2):
 
     return iou
 
-def test_op(yolo_tensor, gt): #size is None x 7 x 7 x 30, P, X, Y, WIDTH, HEIGHT, P, X, Y, WIDTH, HEIGHT, 20C
-    #1st: match gt-label with appropriate grid cell
-    batch_size = 1
-    S = 7
-    gt = (174/486, 101/500, 349/486, 351/500) #xmin ymin xmax ymax
-    xmin, ymin, xmax, ymax = gt
+def condition1(batch_count, batch_size, loss, num_objects, yolo_tensor, class_tensor, gt):
+    return batch_count < batch_size
 
-    #cell index
-    cell_y = int((ymin + ymax)/2 * S)
-    cell_x = int((xmin + xmax)/2 * S)
+def body1(batch_count, batch_size, loss, num_objects, yolo_tensor, class_tensor, gt):
 
-    bndbox1 = yolo_tensor[0, cell_y, cell_x, 1:5] # [x, y, width, height]
-    bndbox1_confidence = yolo_tensor[0, cell_y, cell_x, 0]
-    bndbox2 = yolo_tensor[0, cell_y, cell_x, 6:10]
-    bndbox2_confidence = yolo_tensor[0, cell_y, cell_x, 5]
+    #while loop
+    obj_idx = tf.constant(0)
+    num_objects = num_objects[batch_count]
+    result = tf.while_loop(condition2, body2, [batch_count, obj_idx, num_objects, loss, yolo_tensor, class_tensor, gt])
+    batch_loss = result[3]
+    loss += batch_loss
+    #iterate
+    batch_count += 1
+    return batch_count, batch_size, loss, num_objects, yolo_tensor, class_tensor, gt
 
-    bndbox1_iou = iou(box1 = (bndbox1[0], bndbox1[1], bndbox1[2]+bndbox1[0], bndbox1[3]+bndbox1[1]),
-                      box2 = gt)
+def condition2(batch_count, obj_idx, num_objects, loss, yolo_tensor, class_tensor, gt):
+    return obj_idx < num_objects
 
-    bndbox2_iou = iou(box1 = (bndbox2[0], bndbox2[1], bndbox2[2]+bndbox2[0], bndbox2[3]+bndbox2[1]),
-                      box2 = gt)
+def body2(batch_count, obj_idx, num_objects, loss, yolo_tensor, class_tensor, gt):
+    #do shit
+
+    gt_box = gt[batch_count, obj_idx, 0:4]
+    gt_class_idx = tf.cast(gt[batch_count, obj_idx, 4], tf.int32)
+    xmin = gt_box[0]
+    ymin = gt_box[1]
+    xmax = gt_box[2]
+    ymax = gt_box[3]
+    S = tf.constant(7.0)
+
+    cell_y = tf.cast(tf.floor((ymin + ymax)/2 * S), tf.int32)
+    cell_x = tf.cast(tf.floor((xmin + xmax)/2 * S), tf.int32)
+
+    box0 = yolo_tensor[batch_count, cell_y, cell_x, 1:5] # [x, y, width, height]
+    confidence0 = yolo_tensor[batch_count, cell_y, cell_x, 0]
+    box1 = yolo_tensor[batch_count, cell_y, cell_x, 6:10]
+    confidence1 = yolo_tensor[batch_count, cell_y, cell_x, 5]
+
+    bndbox1_iou = iou(box1 = (box0[0], box0[1], box0[2]+box0[0], box0[3]+box0[1]),
+                      box2 = gt_box)
+
+    bndbox2_iou = iou(box1 = (box1[0], box1[1], box1[2]+box1[0], box1[3]+box1[1]),
+                      box2 = gt_box)
 
     box_index = tf.cond(bndbox1_iou > bndbox2_iou, lambda: tf.constant(0), lambda: tf.constant(1))
-    #box_index = tf.cast(box_index, tf.int32)
+    box_index = tf.cast(box_index, tf.int32)
 
     #extract data from gt and yolo_tensor
     gt_x = xmin
     gt_y = ymin
     gt_width = xmax-xmin
     gt_height = ymax-ymin
-    x = yolo_tensor[:, cell_y, cell_x, box_index*5 + 1]
-    y = yolo_tensor[:, cell_y, cell_x, box_index*5 + 2]
-    width = yolo_tensor[:, cell_y, cell_x, box_index*5 + 3]
-    height = yolo_tensor[:, cell_y, cell_x, box_index*5 + 4]
+    x = yolo_tensor[batch_count, cell_y, cell_x, box_index*5 + 1]
+    y = yolo_tensor[batch_count, cell_y, cell_x, box_index*5 + 2]
+    width = yolo_tensor[batch_count, cell_y, cell_x, box_index*5 + 3]
+    height = yolo_tensor[batch_count, cell_y, cell_x, box_index*5 + 4]
 
     #coord losses
     x_loss = tf.reduce_sum(tf.pow(x - gt_x, 2))
     y_loss = tf.reduce_sum(tf.pow(y - gt_y, 2))
     w_loss = tf.reduce_sum(tf.pow(width - gt_width, 2))
     h_loss = tf.reduce_sum(tf.pow(height - gt_height, 2))
-    coord_loss = (x_loss + y_loss + w_loss + h_loss) / batch_size
+    coord_loss = x_loss + y_loss + w_loss + h_loss
 
     #confidence loss
-    box1_confidence = yolo_tensor[:, :, :, 0:1]
-    box2_confidence = yolo_tensor[:, :, :, 5:6]
-    #box_conficences = tf.concat([box1_confidence, box2_confidence], 3)
+    box1_confidence = yolo_tensor[batch_count, :, :, 0]
+    box2_confidence = yolo_tensor[batch_count, :, :, 5]
+    box_conficences = tf.stack([box1_confidence, box2_confidence])
 
-    gt_box_confidences = tf.zeros([1,7,7,2])
-    gt_box_confidences[:, cell_y, cell_x, box_index] = 1
-    confidence_loss_1 = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels = gt_box_confidences[:,:,:,0], logits = box1_confidence))
-    confidence_loss_2 = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels = gt_box_confidences[:,:,:,1], logits = box2_confidence))
+    one_hot0 = tf.one_hot(indices = box_index,
+                          depth = 2,
+                          on_value = cell_x,
+                          off_value = -1,
+                          axis = 0)
+    one_hot1 = tf.one_hot(indices = one_hot0,
+                          depth = 7,
+                          on_value = cell_y,
+                          off_value = -1,
+                          axis = -1)
+    gt_box_confidences = tf.one_hot(indices = one_hot1,
+                                    depth = 7,
+                                    on_value = 1,
+                                    off_value = 0,
+                                    axis = -1)
+
+    #if something is wrong then cell_x and cell_y is flipped
+    confidence_loss = tf.reduce_sum(tf.nn.softmax_cross_entropy_with_logits(labels = gt_box_confidences, logits = box_conficences))
 
     #class loss
-    gt_class = np.zeros((1,20)) #kanske (batch_size, num_objects, 20)
-    gt_class[0, 0] = 1
-    class_prediction = yolo_tensor[0:1, cell_y, cell_x, 10:30]
-    class_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels = gt_class, logits = class_prob))
+    gt_prob = tf.constant(1.0)
+    pred_prob = class_tensor[batch_count, cell_y, cell_x, gt_class_idx]
+    class_loss = tf.reduce_sum(- gt_prob * tf.log(pred_prob))
 
-    loss = coord_loss + confidence_loss + class_loss
+    totalloss = coord_loss + confidence_loss + class_loss
+    loss += totalloss
+
+    #iterate
+    obj_idx += 1
+    return batch_count, obj_idx, num_objects, loss, yolo_tensor, class_tensor, gt
+
+def loss_op(yolo_tensor, class_tensor, gt, num_objects, batch_size):
+    #yolo_tensor is None x 7 x 7 x 10       ### P, X, Y, WIDTH, HEIGHT, P, X, Y, WIDTH, HEIGHT
+    #class_tensor is None x 7 x 7 x 20      ### 20C
+    #gt is (batch_size, num_objects, 5)     ### xmin, ymin, xmax, ymax, class prediction index
+    #num_objects is [batch_size]
+
+    #1st: match gt-label with appropriate grid cell
+    #batch_size = num_objects.get_shape().as_list()[0]
+    loss = tf.constant(0.0)
+    batch_count = tf.constant(0)
+    while_results = tf.while_loop(condition1, body1, [batch_count, batch_size, loss, num_objects, yolo_tensor, class_tensor, gt])
+
+    loss = while_results[2]
+    loss = loss / batch_size
     return loss
