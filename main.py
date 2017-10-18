@@ -18,16 +18,16 @@ print(image.shape)
 
 is_training = tf.placeholder(tf.bool)
 x = tf.placeholder(tf.float32, shape = [None, 259, 259, 3])
-gt = tf.placeholder(tf.float32, shape = [None, None, 24]) # shape(batch_size, max_num_objects, 24)    ### xmin, ymin, xmax, ymax, class prediction
-gt_num_objects = tf.placeholder(tf.int32, shape = [None]) #shape(batch_size)
+gt = tf.placeholder(tf.float32, shape = [None, None, 5]) # shape(batch_size, max_num_objects, 5)    ### xmin, ymin, xmax, ymax, class prediction
+gt_num_objects = tf.placeholder(tf.int32) #shape(batch_size)
 batch_size = tf.placeholder(tf.int32)
 
 yolo_tensor, class_tensor = YOLO_network(x, is_training)
-gt_im1 = np.array([[[174/486, 101/500, 349/486, 351/500, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-                    [      0,       0,       0,       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]],
+gt_im1 = np.array([[[174/486, 101/500, 349/486, 351/500, 0],
+                    [      0,       0,       0,       0, 0]],
 
-                    [[174/486, 101/500, 349/486, 351/500, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-                     [174/486, 101/500, 349/486, 351/500, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]]])
+                    [[174/486, 101/500, 349/486, 351/500, 0],
+                     [174/486, 101/500, 349/486, 351/500, 0]]])
 num_objects = [1, 2]
 print(gt_im1)
 print(gt_im1.shape)

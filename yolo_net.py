@@ -99,10 +99,12 @@ def body1(batch_count, batch_size, loss, num_objects, yolo_tensor, class_tensor,
 
     #while loop
     obj_idx = tf.constant(0)
-    num_objects = num_objects[batch_count]
-    result = tf.while_loop(condition2, body2, [batch_count, obj_idx, num_objects, loss, yolo_tensor, class_tensor, gt])
+    result = tf.while_loop(condition2, body2, [batch_count, obj_idx, num_objects[batch_count], loss, yolo_tensor, class_tensor, gt])
+
     batch_loss = result[3]
+
     loss += batch_loss
+
     #iterate
     batch_count += 1
     return batch_count, batch_size, loss, num_objects, yolo_tensor, class_tensor, gt
@@ -199,10 +201,11 @@ def loss_op(yolo_tensor, class_tensor, gt, num_objects, batch_size):
 
     #1st: match gt-label with appropriate grid cell
     #batch_size = num_objects.get_shape().as_list()[0]
+
     loss = tf.constant(0.0)
     batch_count = tf.constant(0)
     while_results = tf.while_loop(condition1, body1, [batch_count, batch_size, loss, num_objects, yolo_tensor, class_tensor, gt])
 
     loss = while_results[2]
-    loss = loss / batch_size
+    loss = loss / tf.cast(batch_size, tf.float32)
     return loss
