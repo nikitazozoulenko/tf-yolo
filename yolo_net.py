@@ -51,18 +51,14 @@ def YOLO_network(x, is_training, confidence_threshhold = 0.5):
         B = 2
         C = 20
         with tf.variable_scope("bndboxes"):
-            bndboxes = conv_wrapper(x, shape = [1,1,256,B*5], strides = [1, 1, 1, 1], padding = "VALID")
-            yolo_tensor = tf.nn.tanh(bndboxes)
+            yolo_tensor = conv_wrapper(x, shape = [1,1,256,B*5], strides = [1, 1, 1, 1], padding = "VALID")
+            yolo_tensor[:, :, :, 0] = (tf.nn.tanh(yolo_tensor[:, :, :, 0]) + 1) / 2
+            yolo_tensor[:, :, :, 5] = (tf.nn.tanh(yolo_tensor[:, :, :, 5]) + 1) / 2
+            FIX THIS SHIT, DIVIDE UP INTO 3 THINGS, box_tensor, confidence_tensor, class_tensor
         with tf.variable_scope("classes"):
             classes = conv_wrapper(x, shape = [1, 1, 256, C], strides = [1, 1, 1, 1], padding = "VALID")
             class_tensor = tf.nn.softmax(classes)
     return yolo_tensor, class_tensor
-
-def object_detection_op(yolo_tensor, threshold):
-    #input: 1 yolo_tensor size None x 7 x 7 x 30:      P, X, Y, WIDTH, HEIGHT, P, X, Y, WIDTH, HEIGHT, 20C
-
-    #output: None*(0-98 bndbox + class prediction)
-    pass
 
 def iou(box1, box2):
     #input
@@ -99,7 +95,7 @@ def body1(batch_count, batch_size, loss, num_objects, yolo_tensor, class_tensor,
 
     #while loop
     obj_idx = tf.constant(0)
-    result = tf.while_loop(condition2, body2, [batch_count, obj_idx, num_objects[batch_count], loss, yolo_tensor, class_tensor, gt])
+    result = tf.while_loop(condition2, body2, [batch_count, obj_idx, num_objects[batch_count], loss, yolo_tensor, class_tensor, gt], swap_memory=True)
 
     batch_loss = result[3]
 
@@ -114,6 +110,10 @@ def condition2(batch_count, obj_idx, num_objects, loss, yolo_tensor, class_tenso
 
 def body2(batch_count, obj_idx, num_objects, loss, yolo_tensor, class_tensor, gt):
     #do shit
+
+    alpha_coord = 10.0
+    alpha_obj_confidence = 2
+    alpha_class = 1.0
 
     gt_box = gt[batch_count, obj_idx, 0:4]
     gt_class_idx = tf.cast(gt[batch_count, obj_idx, 4], tf.int32)
@@ -174,7 +174,7 @@ def body2(batch_count, obj_idx, num_objects, loss, yolo_tensor, class_tensor, gt
                           axis = -1)
     gt_box_confidences = tf.one_hot(indices = one_hot1,
                                     depth = 7,
-                                    on_value = 1,
+                                    on_value = alpha_obj_confidence,
                                     off_value = 0,
                                     axis = -1)
 
@@ -186,14 +186,14 @@ def body2(batch_count, obj_idx, num_objects, loss, yolo_tensor, class_tensor, gt
     pred_prob = class_tensor[batch_count, cell_y, cell_x, gt_class_idx]
     class_loss = tf.reduce_sum(- gt_prob * tf.log(pred_prob))
 
-    totalloss = coord_loss + confidence_loss + class_loss
+    totalloss = alpha_coord * coord_loss + confidence_loss + alpha_class* class_loss
     loss += totalloss
 
     #iterate
     obj_idx += 1
     return batch_count, obj_idx, num_objects, loss, yolo_tensor, class_tensor, gt
 
-def loss_op(yolo_tensor, class_tensor, gt, num_objects, batch_size):
+def loss(yolo_tensor, class_tensor, gt, num_objects, batch_size):
     #yolo_tensor is None x 7 x 7 x 10       ### P, X, Y, WIDTH, HEIGHT, P, X, Y, WIDTH, HEIGHT
     #class_tensor is None x 7 x 7 x 20      ### 20C
     #gt is (batch_size, num_objects, 5)     ### xmin, ymin, xmax, ymax, class prediction index
@@ -204,8 +204,40 @@ def loss_op(yolo_tensor, class_tensor, gt, num_objects, batch_size):
 
     loss = tf.constant(0.0)
     batch_count = tf.constant(0)
-    while_results = tf.while_loop(condition1, body1, [batch_count, batch_size, loss, num_objects, yolo_tensor, class_tensor, gt])
+    while_results = tf.while_loop(condition1, body1, [batch_count, batch_size, loss, num_objects, yolo_tensor, class_tensor, gt], swap_memory=True)
 
     loss = while_results[2]
     loss = loss / tf.cast(batch_size, tf.float32)
     return loss
+
+def detect_objects(yolo_tensor, class_tensor):
+    #yolo_tensor is None x 7 x 7 x 10       ### P, X, Y, WIDTH, HEIGHT, P, X, Y, WIDTH, HEIGHT
+    #class_tensor is None x 7 x 7 x 20      ### 20C
+
+    box1_confidence = yolo_tensor[0, :, :, 0]
+    box2_confidence = yolo_tensor[0, :, :, 5]
+    box_confidences = tf.stack([box1_confidence, box2_confidence]) #2, 7, 7
+
+    class_confidences = tf.reduce_max(class_tensor[0,:,:,:], axis = 2)
+    class_conf = tf.stack([class_confidences, class_confidences])
+
+    probs = box_confidences * class_conf
+    classes = tf.argmax(class_tensor[0,:,:,:], axis = 2)
+
+    box1 = yolo_tensor[0, :, :, 1:5]
+    box2 = yolo_tensor[0, :, :, 6:10]
+    boxes = tf.stack([box1, box2]) #2, 7, 7
+    return boxes, classes, probs
+
+def process_boxes(threshold, boxes, classes, probs):
+    final_boxes = []
+    final_classes = []
+    final_probs = []
+    for i in range(7):
+        for j in range(7):
+            for b in range(2):
+                if probs[b,i,j] > threshold:
+                    final_boxes.append(boxes[b,i,j])
+                    final_classes.append(classes[i,j])
+                    final_probs.append(probs[b,i,j])
+    return final_boxes, final_classes, final_probs

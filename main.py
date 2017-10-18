@@ -8,9 +8,7 @@ from scipy.ndimage.interpolation import zoom
 from PIL import Image
 
 image = Image.open("E:/Datasets/VOC2012/JPEGImages/2007_000027.jpg")
-image.show()
 image = image.resize((259,259))
-image.show()
 image = (np.asarray(image) / 255).reshape(259,259,3)
 image = np.array([image,image])
 print(image)
@@ -23,21 +21,30 @@ gt_num_objects = tf.placeholder(tf.int32) #shape(batch_size)
 batch_size = tf.placeholder(tf.int32)
 
 yolo_tensor, class_tensor = YOLO_network(x, is_training)
-gt_im1 = np.array([[[174/486, 101/500, 349/486, 351/500, 0],
-                    [      0,       0,       0,       0, 0]],
-
-                    [[174/486, 101/500, 349/486, 351/500, 0],
-                     [174/486, 101/500, 349/486, 351/500, 0]]])
-num_objects = [1, 2]
+gt_im1 = np.array([[[174/486, 101/500, 349/486, 351/500, 0]]])
+num_objects = [1,-1]
 print(gt_im1)
 print(gt_im1.shape)
-#loss = loss_op(yolo_output, gt)
-#train_op = tf.train.AdamOptimizer(learning_rate = 0.01).minimize(loss)
-loss_op = loss_op(yolo_tensor, class_tensor, gt, gt_num_objects, batch_size)
+
+loss_op = loss(yolo_tensor, class_tensor, gt, gt_num_objects, batch_size)
+train_op = tf.train.AdamOptimizer(learning_rate = 0.0001).minimize(loss_op)
+
+detection_op = detect_objects(yolo_tensor, class_tensor)
 with tf.Session() as sess:
     sess.run(tf.global_variables_initializer())
-    iterations = 1
+    iterations = 1000
+    print("cost: ", sess.run(loss_op, feed_dict = {x : image, gt : gt_im1, gt_num_objects : num_objects, batch_size : 2, is_training : True}))
     for _ in range(iterations):
         #sess.run(train_op, feed_dict = {x : image, is_training : True})
-        cost = sess.run(loss_op, feed_dict = {x : image, gt : gt_im1, gt_num_objects : num_objects, batch_size : 2, is_training : True})
-        print(cost)
+        sess.run(train_op, feed_dict = {x : image, gt : gt_im1, gt_num_objects : num_objects, batch_size : 2, is_training : True})
+    print(sess.run(loss_op, feed_dict = {x : image, gt : gt_im1, gt_num_objects : num_objects, batch_size : 2, is_training : True}))
+    boxes, classes, probs = sess.run(detection_op, feed_dict = {x : image, is_training : True})
+    print(classes)
+    print("test")
+    print(boxes[0,3,3])
+    print(boxes[1,3,3])
+    print("testend")
+    boxes, classes, probs = process_boxes(0.9, boxes, classes, probs)
+    for box in boxes: print("box", box)
+    print(classes)
+    print(probs)
