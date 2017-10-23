@@ -116,6 +116,7 @@ def body1(batch_count, batch_size, loss, num_objects, box_tensor, confidence_ten
     gt_box_confidences = tf.minimum(gt_box_confidences, tf.ones([2,7,7]))
     mask = tf.cast(gt_box_confidences > 0, tf.float32)
     batch_confidence_loss = tf.pow(box_conficences - gt_box_confidences, 2)
+    KANSKE INTE BEHÖVER EN SÅ JOBBIG CONF_LOSS FUNKTION, EXAKT SOM CLASS_LOSS
 
     alpha_obj_confidence = 5.0
     batch_confidence_loss += mask * alpha_obj_confidence * batch_confidence_loss
