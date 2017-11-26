@@ -5,7 +5,7 @@ import tensorflow as tf
 import numpy as np
 from resnet import *
 
-def YOLO_network(x, is_training, confidence_threshhold = 0.5):
+def YOLO_network(x, is_training):
     #Nonex259x259x3 input image
     #model used is ResNet-18, modified to fit the tiny imagenet dataset
     with tf.variable_scope("conv1"):
@@ -116,7 +116,7 @@ def body1(batch_count, batch_size, loss, num_objects, box_tensor, confidence_ten
     gt_box_confidences = tf.minimum(gt_box_confidences, tf.ones([2,7,7]))
     mask = tf.cast(gt_box_confidences > 0, tf.float32)
     batch_confidence_loss = tf.pow(box_conficences - gt_box_confidences, 2)
-    KANSKE INTE BEHÖVER EN SÅ JOBBIG CONF_LOSS FUNKTION, EXAKT SOM CLASS_LOSS
+    #KANSKE INTE BEHÖVER EN SÅ JOBBIG CONF_LOSS FUNKTION, EXAKT SOM CLASS_LOSS
 
     alpha_obj_confidence = 5.0
     batch_confidence_loss += mask * alpha_obj_confidence * batch_confidence_loss
@@ -207,8 +207,8 @@ def body2(batch_count, obj_idx, num_objects, loss, box_tensor, confidence_tensor
     return batch_count, obj_idx, num_objects, [coord_loss, confidence_loss, class_loss], box_tensor, confidence_tensor, class_tensor, gt, gt_box_confidences
 
 def loss(box_tensor, confidence_tensor, class_tensor, gt, num_objects, batch_size):
-    #yolo_tensor is None x 7 x 7 x 10       ### P, X, Y, WIDTH, HEIGHT, P, X, Y, WIDTH, HEIGHT
-    #class_tensor is None x 7 x 7 x 20      ### 20C
+    #yolo_tensor is batch_size x 7 x 7 x 10       ### P, X, Y, WIDTH, HEIGHT, P, X, Y, WIDTH, HEIGHT
+    #class_tensor is batch_size x 7 x 7 x 20      ### 20C
     #gt is (batch_size, num_objects, 5)     ### xmin, ymin, xmax, ymax, class prediction index
     #num_objects is [batch_size]
 
@@ -220,7 +220,8 @@ def loss(box_tensor, confidence_tensor, class_tensor, gt, num_objects, batch_siz
     class_loss = tf.constant(0.0)
 
     batch_count = tf.constant(0)
-    while_results = tf.while_loop(condition1, body1, [batch_count, batch_size, [coord_loss, confidence_loss, class_loss], num_objects, box_tensor, confidence_tensor, class_tensor, gt], swap_memory=True)
+    while_results = tf.while_loop(condition1, body1, [batch_count, batch_size, [coord_loss, confidence_loss, class_loss],
+                                    num_objects, box_tensor, confidence_tensor, class_tensor, gt], swap_memory=True)
 
     loss = while_results[2]
 
