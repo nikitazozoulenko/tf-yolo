@@ -5,7 +5,9 @@ import tensorflow as tf
 import numpy as np
 from resnet import *
 
-def YOLO_network(x, is_training):
+batch_size = 2
+
+def inference(x, is_training):
     #Nonex259x259x3 input image
     #model used is ResNet-18, modified to fit the tiny imagenet dataset
     with tf.variable_scope("conv1"):
@@ -54,8 +56,7 @@ def YOLO_network(x, is_training):
 
         box_tensor = yolo_tensor[:,:,:,0:8]
 
-        confidence_tensor = yolo_tensor[:,:,:,8:10]
-        #confidence_tensor = (tf.nn.tanh(confidence_tensor)+1)/2
+        confidence_tensor = tf.nn.sigmoid(yolo_tensor[:,:,:,8:10])
 
         class_tensor = yolo_tensor[:,:,:,10:30]
         class_tensor = tf.nn.softmax(class_tensor)
@@ -89,56 +90,14 @@ def iou(box1, box2):
 
     return iou
 
-def condition1(batch_count, batch_size, loss, num_objects, box_tensor, confidence_tensor, class_tensor, gt):
-    return batch_count < batch_size
-
-def body1(batch_count, batch_size, loss, num_objects, box_tensor, confidence_tensor, class_tensor, gt):
-
-    #while loop
-    obj_idx = tf.constant(0)
-    gt_box_confidences = tf.zeros([2,7,7])
-    batch_coord_loss = tf.constant(0.0)
-    batch_confidence_loss = tf.constant(0.0)
-    batch_class_loss = tf.constant(0.0)
-
-    result = tf.while_loop(condition2, body2, [batch_count, obj_idx, num_objects[batch_count], [batch_coord_loss, batch_confidence_loss, batch_class_loss], box_tensor, confidence_tensor, class_tensor, gt, gt_box_confidences], swap_memory=True)
-    batch_loss = result[3]
-
-    batch_coord_loss = batch_loss[0]
-    batch_class_loss = batch_loss[2]
-
-    #confidence loss
-    box1_confidence = confidence_tensor[batch_count, :, :, 0]
-    box2_confidence = confidence_tensor[batch_count, :, :, 1]
-    box_conficences = tf.stack([box1_confidence, box2_confidence])
-
-    gt_box_confidences = result[8]
-    gt_box_confidences = tf.minimum(gt_box_confidences, tf.ones([2,7,7]))
-    mask = tf.cast(gt_box_confidences > 0, tf.float32)
-    batch_confidence_loss = tf.pow(box_conficences - gt_box_confidences, 2)
-    #KANSKE INTE BEHÖVER EN SÅ JOBBIG CONF_LOSS FUNKTION, EXAKT SOM CLASS_LOSS
-
-    alpha_obj_confidence = 5.0
-    batch_confidence_loss += mask * alpha_obj_confidence * batch_confidence_loss
-
-    coord_loss = loss[0] + batch_coord_loss
-    confidence_loss = loss[1] + tf.reduce_sum(batch_confidence_loss)
-    class_loss = loss[2] + batch_class_loss
-
-    #iterate
-    batch_count += 1
-    return batch_count, batch_size, [coord_loss, confidence_loss, class_loss], num_objects, box_tensor, confidence_tensor, class_tensor, gt
-
-def condition2(batch_count, obj_idx, num_objects, loss, box_tensor, confidence_tensor, class_tensor, gt, gt_box_confidences):
+def condition(batch_count, obj_idx, num_objects, loss, box_tensor, confidence_tensor, class_tensor, gt, gt_box_confidences):
     return obj_idx < num_objects
 
-def body2(batch_count, obj_idx, num_objects, loss, box_tensor, confidence_tensor, class_tensor, gt, gt_box_confidences):
+def body(batch_count, obj_idx, num_objects, batch_loss, box_tensor, confidence_tensor, class_tensor, gt, gt_box_confidences):
     #do shit
-    coord_loss = loss[0]
-    confidence_loss = loss[1]
-    class_loss = loss[2]
-
-    S = tf.constant(7.0)
+    batch_coord_loss = batch_loss[0]
+    batch_confidence_loss = batch_loss[1]
+    batch_class_loss = batch_loss[2]
 
     gt_box = gt[batch_count, obj_idx, 0:4]
     gt_class_idx = tf.cast(gt[batch_count, obj_idx, 4], tf.int32)
@@ -147,6 +106,7 @@ def body2(batch_count, obj_idx, num_objects, loss, box_tensor, confidence_tensor
     xmax = gt_box[2]
     ymax = gt_box[3]
 
+    S = tf.constant(7.0)
     cell_y = tf.cast(tf.floor((ymin + ymax)/2 * S), tf.int32)
     cell_x = tf.cast(tf.floor((xmin + xmax)/2 * S), tf.int32)
 
@@ -177,7 +137,7 @@ def body2(batch_count, obj_idx, num_objects, loss, box_tensor, confidence_tensor
     y_loss = tf.reduce_sum(tf.pow(y - gt_y, 2))
     w_loss = tf.reduce_sum(tf.pow(width - gt_width, 2))
     h_loss = tf.reduce_sum(tf.pow(height - gt_height, 2))
-    coord_loss += (x_loss + y_loss + w_loss + h_loss)
+    batch_coord_loss += (x_loss + y_loss + w_loss + h_loss)
 
     one_hot0 = tf.one_hot(indices = box_index,
                           depth = 2,
@@ -195,43 +155,57 @@ def body2(batch_count, obj_idx, num_objects, loss, box_tensor, confidence_tensor
                                     off_value = 0.0,
                                     axis = -1)
     #if something is wrong then cell_x and cell_y is flipped
-
+    gt_conf = tf.constant(1.0)
+    pred_conf = confidence_tensor[batch_count, cell_y, cell_x, box_index]
+    batch_confidence_loss += -gt_conf * tf.log(pred_conf)
 
     #class loss
     gt_prob = tf.constant(1.0)
     pred_prob = class_tensor[batch_count, cell_y, cell_x, gt_class_idx]
-    class_loss += tf.reduce_sum(- gt_prob * tf.log(pred_prob))
+    batch_class_loss += -gt_prob * tf.log(pred_prob)
 
     #iterate
     obj_idx += 1
-    return batch_count, obj_idx, num_objects, [coord_loss, confidence_loss, class_loss], box_tensor, confidence_tensor, class_tensor, gt, gt_box_confidences
+    return batch_count, obj_idx, num_objects, [batch_coord_loss, batch_confidence_loss, batch_class_loss], box_tensor, confidence_tensor, class_tensor, gt, gt_box_confidences
 
-def loss(box_tensor, confidence_tensor, class_tensor, gt, num_objects, batch_size):
+def loss(box_tensor, confidence_tensor, class_tensor, gt, num_objects):
     #yolo_tensor is batch_size x 7 x 7 x 10       ### P, X, Y, WIDTH, HEIGHT, P, X, Y, WIDTH, HEIGHT
     #class_tensor is batch_size x 7 x 7 x 20      ### 20C
     #gt is (batch_size, num_objects, 5)     ### xmin, ymin, xmax, ymax, class prediction index
     #num_objects is [batch_size]
 
-    #1st: match gt-label with appropriate grid cell
-    #batch_size = num_objects.get_shape().as_list()[0]
-
     coord_loss = tf.constant(0.0)
     confidence_loss = tf.constant(0.0)
     class_loss = tf.constant(0.0)
 
-    batch_count = tf.constant(0)
-    while_results = tf.while_loop(condition1, body1, [batch_count, batch_size, [coord_loss, confidence_loss, class_loss],
-                                    num_objects, box_tensor, confidence_tensor, class_tensor, gt], swap_memory=True)
+    for batch_count in range(batch_size):
+        #while loop
+        gt_box_confidences = tf.zeros([2,7,7])
+        batch_coord_loss = tf.constant(0.0)
+        batch_confidence_loss = tf.constant(0.0)
+        batch_class_loss = tf.constant(0.0)
 
-    loss = while_results[2]
+        obj_idx = tf.constant(0)
+        result = tf.while_loop(condition, body,
+            [batch_count, obj_idx, num_objects[batch_count, 0],
+            [batch_coord_loss, batch_confidence_loss, batch_class_loss],
+            box_tensor, confidence_tensor, class_tensor, gt, gt_box_confidences], swap_memory=True)
+        batch_loss = result[3]
+
+        batch_coord_loss += batch_loss[0]
+        batch_confidence_loss += batch_loss[1]
+        batch_class_loss += batch_loss[2]
+
+        coord_loss = batch_coord_loss
+        confidence_loss = batch_confidence_loss
+        class_loss = batch_class_loss
 
     alpha_coord = 3.0
     alpha_class = 1.0
 
-
-    coord_loss = loss[0] * alpha_coord / tf.cast(batch_size, tf.float32)
-    confidence_loss = 1000.0 * loss[1] / tf.cast(batch_size, tf.float32)
-    class_loss = loss[2] * alpha_class / tf.cast(batch_size, tf.float32)
+    coord_loss = coord_loss * alpha_coord / batch_size
+    confidence_loss = confidence_loss / batch_size
+    class_loss = class_loss * alpha_class / batch_size
     tf.summary.scalar("coord_loss", coord_loss)
     tf.summary.scalar("confidence_loss", confidence_loss)
     tf.summary.scalar("class_loss", class_loss)
